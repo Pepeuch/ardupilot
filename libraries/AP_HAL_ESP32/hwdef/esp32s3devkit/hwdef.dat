@@ -1,90 +1,224 @@
-# Nick K on Discord
+# Mowgli ESP32-S3 board definition
+#
+# Based on esp32s3devkit, adapted for Mowgli Rover low-level controller:
+# - ESP32-S3 runs ArduRover / low-level control
+# - no WiFi/Bluetooth intended for final robot
+# - CAN/TWAI for 3 ESC/VESC/AM32 via external CAN transceiver
+# - UART to Raspberry Pi companion
+# - UART to external panel ESP32
+# - SPI IMU
+# - I2C power monitors
+# - optional PWM fallback outputs
+# ==== MOWGLI PINOUT (ESP32-S3) ====
+# CAN:      TX=5  RX=4
+# SPI IMU:  MOSI=36 MISO=37 SCLK=35 CS=34
+# I2C:      SDA=16 SCL=15
+# UART0:    USB console
+# UART1:    RPi / companion
+# RCOUT:    6-11
+# ENCODERS: L(2,6) R(7,8)  (PCNT planned)
+#
+# Original ESP32 ArduPilot port by Nick K on Discord
 
 define HAL_ESP32_BOARD_NAME "esp32s3devkit"
 
-# SPI Buses; https://docs.espressif.com/projects/esp-idf/en/v5.3.4/esp32/api-reference/peripherals/spi_master.html
+# --------------------------------------------------------------------
+# SPI Buses
+# --------------------------------------------------------------------
+# ESP32-S3 GPIO matrix allows flexible SPI pin mapping.
+# Keep IMU on SPI for lower jitter and better noise robustness.
+#
 #            Host      DMA Channel     MOSI        MISO        SCLK
 ESP32_SPIBUS SPI3_HOST SPI_DMA_CH_AUTO GPIO_NUM_36 GPIO_NUM_37 GPIO_NUM_35
 
-# i2c Buses
+# --------------------------------------------------------------------
+# I2C Buses
+# --------------------------------------------------------------------
+# I2C reserved for low-speed sensors:
+# - INA226 / INA228 battery current monitor
+# - INA226 / INA228 charge current monitor
+# - optional temperature / auxiliary sensors
+#
 #             Port       SDA         SCL          SPEED    INTERNAL SOFT
-ESP32_I2CBUS  I2C_NUM_0  GPIO_NUM_16 GPIO_NUM_15  400*KHZ  true     false
+ESP32_I2CBUS  I2C_NUM_0  GPIO_NUM_13 GPIO_NUM_12  400*KHZ  true     false
 
+# --------------------------------------------------------------------
 # SPI Devices
+# --------------------------------------------------------------------
+# Primary IMU on SPI.
+# CS is moved away from default GPIO34 to avoid ADC/reserved usage.
+#
 #            Name                Bus   Device  ChipSel      Mode LoSpeed HiSpeed
-ESP32_SPIDEV mpu9250             0     0       GPIO_NUM_34  0    2*MHZ   8*MHZ
-# ESP32_SPIDEV bmp280              0     0       GPIO_NUM_46  3    10*MHZ  10*MHZ
+ESP32_SPIDEV mpu9250             0     0       GPIO_NUM_10  0    2*MHZ   8*MHZ
 
+# Optional barometer over SPI, disabled for Mowgli by default.
+# ESP32_SPIDEV bmp280            0     1       GPIO_NUM_11  3    10*MHZ  10*MHZ
 
-define HAL_ESP32_RMT_RX_PIN_NUMBER GPIO_NUM_14
+# --------------------------------------------------------------------
+# CAN / TWAI
+# --------------------------------------------------------------------
+# ESP32-S3 TWAI controller needs an external CAN transceiver:
+# TJA1051T/3, TCAN332, SN65HVD230, etc.
+#
+# Recommended wiring:
+# GPIO15 -> TXD transceiver
+# GPIO18 <- RXD transceiver
+#
+define HAL_ESP32_CAN_TX_PIN GPIO_NUM_15
+define HAL_ESP32_CAN_RX_PIN GPIO_NUM_18
 
-# ADC is available on lots of pints on the esp32, but adc2 cant co-exist with wifi we choose to allow ADC on :
+# Optional local bring-up self-test.
+# 0 = normal
+# 1 = TWAI_MODE_NO_ACK test mode
+define HAL_ESP32_CAN_SELFTEST 0
 
-# two different pin numbering schemes, both are ok, but only one at a time:
-ESP32_ADC_PIN ADC_CHANNEL_4       11     1
-ESP32_ADC_PIN ADC_CHANNEL_3       11     2
-ESP32_ADC_PIN ADC_CHANNEL_1       11     3
-ESP32_ADC_PIN ADC_CHANNEL_0       11     4
+# --------------------------------------------------------------------
+# RMT / RC input
+# --------------------------------------------------------------------
+# RCIN is not a priority for Mowgli, but keep an optional input.
+# GPIO14 is reserved for the panel UART RX, so RCIN is moved to GPIO4.
+#
+define HAL_ESP32_RMT_RX_PIN_NUMBER GPIO_NUM_4
+define HAL_ESP32_RCIN GPIO_NUM_4
 
-# ESP32_ADC_PIN ADC_GPIO35_CHANNEL       11     35
-# ESP32_ADC_PIN ADC_GPIO34_CHANNEL       11     34
-# ESP32_ADC_PIN ADC_GPIO39_CHANNEL       11     39
-# ESP32_ADC_PIN ADC_GPIO36_CHANNEL       11     36
+# --------------------------------------------------------------------
+# ADC
+# --------------------------------------------------------------------
+# ADC kept available for fallback battery voltage/current sensing.
+# Preferred final design: INA226/INA228 over I2C instead of raw ADC.
+#
+# Two different pin numbering schemes are supported by the ESP32 HAL.
+# Keep only one active at a time.
+#
+# ArduPilot logical ADC pins:
+ESP32_ADC_PIN ADC_CHANNEL_0       11     1
+ESP32_ADC_PIN ADC_CHANNEL_1       11     2
+ESP32_ADC_PIN ADC_CHANNEL_3       11     3
+ESP32_ADC_PIN ADC_CHANNEL_4       11     4
 
-#-----INS/IMU-----
+# Alternative direct GPIO numbering, disabled by default:
+# ESP32_ADC_PIN ADC_GPIO1_CHANNEL   11     1
+# ESP32_ADC_PIN ADC_GPIO2_CHANNEL   11     2
+# ESP32_ADC_PIN ADC_GPIO3_CHANNEL   11     3
+# ESP32_ADC_PIN ADC_GPIO4_CHANNEL   11     4
+
+# --------------------------------------------------------------------
+# INS / IMU
+# --------------------------------------------------------------------
+# Mowgli first target keeps MPU9250 because it is already supported by
+# the current ESP32 ArduPilot hwdef.
+#
+# Future better options:
+# - ICM20948 SPI
+# - BMI270/BMI088 SPI
+# depending on available ArduPilot driver support on ESP32.
+#
 IMU Invensense SPI:mpu9250 ROTATION_NONE
 # IMU Invensense SPI:mpu9250 ROTATION_ROLL_180
+
 define HAL_INS_DEFAULT HAL_INS_MPU9250_SPI
 define INS_MAX_INSTANCES 3  # only here for binary identicality
 
-#-----COMPASS-----
+# --------------------------------------------------------------------
+# Compass
+# --------------------------------------------------------------------
+# MPU9250 includes AK8963 magnetometer.
+# WARNING for Mowgli:
+# the magnetometer may be strongly disturbed by wheel motors and blade motor.
+#
 COMPASS AK8963:probe_mpu9250 0 ROTATION_NONE
 define AP_COMPASS_AK8963_ENABLED TRUE
 define AP_COMPASS_PROBING_ENABLED 1
 
-# -----BARO-----
+# --------------------------------------------------------------------
+# Barometer
+# --------------------------------------------------------------------
+# Rover does not strictly need a barometer.
+# Keep optional BMP280 probing on I2C address 0x77.
+#
 BARO BMP280 I2C:0:0x77
 define HAL_BARO_ALLOW_INIT_NO_BARO 1
 
-# 2 use udp, 1 use tcp...  for udp,client needs to connect as UDPCL in missionplanner etc to 192.168.4.1 port 14550
-define HAL_ESP32_WIFI 1
+# --------------------------------------------------------------------
+# WiFi
+# --------------------------------------------------------------------
+# For Mowgli final target, WiFi/Bluetooth should be disabled on this MCU.
+# Network/UI can be handled by the external panel ESP32 or Raspberry Pi.
+#
+define HAL_ESP32_WIFI 0
 
-#  tip: if u are ok getting mavlink-over-tcp or mavlink-over-udp and want to disable mavlink-over-serial-usb
-# then set ardupilot parameter SERIAL0_PROTOCOL = 0 and reboot.
-#  u also will/may want..
-# LOG_BACKEND_TYPE 1
-# LOG_DISARMED 1
-# SERIAL0_PROTOCOL 0
-
-
+# Kept only for debug if WiFi is re-enabled later.
 define WIFI_SSID "ardupilot123"
 define WIFI_PWD "ardupilot123"
 
-# RCOUT which pins are used?
-
-#-----RCOUT-----
-ESP32_RCOUT GPIO_NUM_11
-ESP32_RCOUT GPIO_NUM_10
+# --------------------------------------------------------------------
+# RCOUT / PWM fallback
+# --------------------------------------------------------------------
+# Optional PWM outputs kept for fallback:
+# - blade PWM / test output
+# - servo/ESC auxiliary output
+# - spare output
+#
+# Main drive ESCs should normally use CAN/TWAI.
+#
 ESP32_RCOUT GPIO_NUM_9
-ESP32_RCOUT GPIO_NUM_8
-ESP32_RCOUT GPIO_NUM_7
-ESP32_RCOUT GPIO_NUM_6
+ESP32_RCOUT GPIO_NUM_11
+ESP32_RCOUT GPIO_NUM_5
 
-# rcin on what pin?
-define HAL_ESP32_RCIN GPIO_NUM_14
+# --------------------------------------------------------------------
+# Wheel encoders / AM32 odometry
+# --------------------------------------------------------------------
+# AM32 does not provide the same telemetry/odometry path as VESC.
+# Reserve four GPIOs for quadrature wheel encoders:
+#
+# LEFT_A  = GPIO2
+# LEFT_B  = GPIO6
+# RIGHT_A = GPIO7
+# RIGHT_B = GPIO8
+#
+# NOTE:
+# These are reserved here by convention only.
+# A dedicated ESP32 GPIO interrupt / PCNT driver still has to be added
+# or mapped to an existing ArduPilot wheel encoder backend.
+#
+# define MOWGLI_ENC_LEFT_A  GPIO_NUM_2
+# define MOWGLI_ENC_LEFT_B  GPIO_NUM_6
+# define MOWGLI_ENC_RIGHT_A GPIO_NUM_7
+# define MOWGLI_ENC_RIGHT_B GPIO_NUM_8
 
-#-----UARTS-----
+# --------------------------------------------------------------------
+# UARTS
+# --------------------------------------------------------------------
+# UART0:
+#   console / USB-UART / boot messages / optional MAVLink
+#
+# UART1:
+#   Raspberry Pi companion computer
+#
+# UART2:
+#   external panel ESP32 / UI controller
+#
 #            port        RX           TX
 ESP32_SERIAL  UART_NUM_0  GPIO_NUM_44  GPIO_NUM_43
-ESP32_SERIAL  UART_NUM_1  GPIO_NUM_17  GPIO_NUM_18
+ESP32_SERIAL  UART_NUM_1  GPIO_NUM_16  GPIO_NUM_17
+ESP32_SERIAL  UART_NUM_2  GPIO_NUM_14  GPIO_NUM_21
 
+# --------------------------------------------------------------------
+# Filesystem / logging
+# --------------------------------------------------------------------
 define HAVE_FILESYSTEM_SUPPORT 1
 
-define HAL_ESP32_SDMMC 1
-define HAL_ESP32_SDCARD 1
+# Disable SDMMC by default for Mowgli low-level controller unless an SD
+# slot is really wired. Flash logging is usually enough for bring-up.
+#
+define HAL_ESP32_SDMMC 0
+define HAL_ESP32_SDCARD 0
+
 define LOGGER_MAVLINK_SUPPORT 1
 define HAL_OS_POSIX_IO 1
 
-# this becomes the default value for the ardupilot param LOG_BACKEND_TYPE, which most ppl want to be 1, for log-to-flash
-# setting to 2 means log-over-mavlink to a companion computer etc.
+# Default log backend:
+# 1 = flash/file logging
+# 2 = mavlink logging to companion computer
+#
 define HAL_LOGGING_BACKENDS_DEFAULT 1
