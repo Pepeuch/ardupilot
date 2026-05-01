@@ -57,7 +57,7 @@ class CANIface : public AP_HAL::CANIface
 public:
     explicit CANIface(uint8_t index);
     CANIface();
-    ~CANIface() override;
+    ~CANIface();
 
     static uint8_t next_interface;
 
@@ -116,7 +116,7 @@ private:
     bool _from_twai_message(const twai_message_t &msg, AP_HAL::CANFrame &frame) const;
 
     void _check_available(bool &read, bool &write,
-                          const AP_HAL::CANFrame *pending_tx) const;
+                          const AP_HAL::CANFrame *pending_tx);
     void _signal_event(void);
     void _drain_rx_queue(void);
     void _drain_tx_queue(void);

@@ -52,7 +52,27 @@
 #define HAL_WITH_EKF_DOUBLE HAL_HAVE_HARDWARE_DOUBLE
 #endif
 
-#define HAL_NUM_CAN_IFACES 0
+#define HAL_NUM_CAN_IFACES 1
+
+#ifndef HAL_ESP32_CAN_SELFTEST
+#define HAL_ESP32_CAN_SELFTEST 1
+#endif
+
+/*
+ * Temporary TWAI pin defaults for ESP32-S3 bring-up on esp32s3devkit.
+ * These can be replaced later by hwdef-generated board-specific values.
+ */
+#ifndef HAL_ESP32_CAN_TX_PIN
+#if CONFIG_IDF_TARGET_ESP32S3
+#define HAL_ESP32_CAN_TX_PIN 5
+#endif
+#endif
+#ifndef HAL_ESP32_CAN_RX_PIN
+#if CONFIG_IDF_TARGET_ESP32S3
+#define HAL_ESP32_CAN_RX_PIN 4
+#endif
+#endif
+
 #define HAL_MEM_CLASS HAL_MEM_CLASS_192
 
 // disable uncommon stuff that we'd otherwise get 
