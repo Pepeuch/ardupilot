@@ -32,7 +32,19 @@
 #include <sys/types.h>
 #include "SPIDevice.h"
 
-#ifdef HAL_ESP32_SDCARD
+#ifndef HAL_ESP32_SDCARD
+#define HAL_ESP32_SDCARD 0
+#endif
+
+#ifndef HAL_ESP32_SDMMC
+#define HAL_ESP32_SDMMC 0
+#endif
+
+#ifndef HAL_ESP32_SDSPI
+#define HAL_ESP32_SDSPI 0
+#endif
+
+#if HAL_ESP32_SDCARD
 
 #if CONFIG_IDF_TARGET_ESP32S2 ||CONFIG_IDF_TARGET_ESP32C3
 #define SPI_DMA_CHAN    host.slot
@@ -86,7 +98,7 @@ done:
     unlink(fw_name);
 }
 
-#ifdef HAL_ESP32_SDMMC
+#if HAL_ESP32_SDMMC
 
 void mount_sdcard_mmc()
 {
@@ -185,7 +197,8 @@ void mount_sdcard()
 #endif // emd mmc
 
 
-#ifdef HAL_ESP32_SDSPI
+#if HAL_ESP32_SDSPI
+
 ESP32::SPIBusDesc bus_ = HAL_ESP32_SDSPI;
 
 void mount_sdcard_spi()
