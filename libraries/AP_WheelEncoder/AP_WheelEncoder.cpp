@@ -15,6 +15,9 @@
 
 #include "AP_WheelEncoder.h"
 #include "WheelEncoder_Quadrature.h"
+#if CONFIG_HAL_BOARD == HAL_BOARD_ESP32
+#include "WheelEncoder_ESP32_PCNT.h"
+#endif
 #include "WheelEncoder_SITL_Quadrature.h"
 #include <AP_Logger/AP_Logger.h>
 
@@ -173,6 +176,8 @@ void AP_WheelEncoder::init(void)
         case WheelEncoder_TYPE_QUADRATURE:
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
             drivers[i] = NEW_NOTHROW AP_WheelEncoder_Quadrature(*this, i, state[i]);
+#elif CONFIG_HAL_BOARD == HAL_BOARD_ESP32
+            drivers[i] = NEW_NOTHROW AP_WheelEncoder_ESP32_PCNT(*this, i, state[i]);
 #endif
             break;
 

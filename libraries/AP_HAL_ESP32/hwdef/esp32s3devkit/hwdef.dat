@@ -177,14 +177,11 @@ ESP32_RCOUT GPIO_NUM_5
 # RIGHT_B = GPIO8
 #
 # NOTE:
-# These are reserved here by convention only.
-# A dedicated ESP32 GPIO interrupt / PCNT driver still has to be added
-# or mapped to an existing ArduPilot wheel encoder backend.
-#
-# define MOWGLI_ENC_LEFT_A  GPIO_NUM_2
-# define MOWGLI_ENC_LEFT_B  GPIO_NUM_6
-# define MOWGLI_ENC_RIGHT_A GPIO_NUM_7
-# define MOWGLI_ENC_RIGHT_B GPIO_NUM_8
+# These defaults feed the temporary AP_WheelEncoder ESP32 PCNT backend.
+define HAL_ESP32_WENC_LEFT_A  2
+define HAL_ESP32_WENC_LEFT_B  6
+define HAL_ESP32_WENC_RIGHT_A 7
+define HAL_ESP32_WENC_RIGHT_B 8
 
 # --------------------------------------------------------------------
 # UARTS
@@ -202,6 +199,22 @@ ESP32_RCOUT GPIO_NUM_5
 ESP32_SERIAL  UART_NUM_0  GPIO_NUM_44  GPIO_NUM_43
 ESP32_SERIAL  UART_NUM_1  GPIO_NUM_16  GPIO_NUM_17
 ESP32_SERIAL  UART_NUM_2  GPIO_NUM_14  GPIO_NUM_21
+
+# USB / UART0 console + MAVLink
+SERIAL0_PROTOCOL 2
+SERIAL0_BAUD 115
+
+# Raspberry Pi companion
+SERIAL1_PROTOCOL 2
+SERIAL1_BAUD 921
+
+# Panel ESP32
+SERIAL2_PROTOCOL 2
+SERIAL2_BAUD 115
+
+# Logging
+LOG_BACKEND_TYPE 1
+LOG_DISARMED 1
 
 # --------------------------------------------------------------------
 # Filesystem / logging
