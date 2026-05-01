@@ -154,10 +154,16 @@ bool CANIface::init(const uint32_t bitrate)
 
     twai_filter_config_t filter_cfg = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
+#if HAL_ESP32_CAN_SELFTEST
+    const twai_mode_t can_mode = TWAI_MODE_NO_ACK;
+#else
+    const twai_mode_t can_mode = TWAI_MODE_NORMAL;
+#endif
+
     twai_general_config_t general_cfg =
         TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)HAL_ESP32_CAN_TX_PIN,
                                     (gpio_num_t)HAL_ESP32_CAN_RX_PIN,
-                                    TWAI_MODE_NORMAL);
+                                    can_mode);
 
     general_cfg.tx_queue_len = HAL_ESP32_TWAI_TX_QUEUE_LEN;
     general_cfg.rx_queue_len = HAL_ESP32_TWAI_RX_QUEUE_LEN;
@@ -193,6 +199,9 @@ bool CANIface::init(const uint32_t bitrate)
     _driver_installed = true;
     bitrate_ = bitrate;
     _bus_off = false;
+#if HAL_ESP32_CAN_SELFTEST
+    Debug("init: TWAI self-test mode enabled");
+#endif
     _initialized = true;
 
     hal.util->snprintf(_worker_name, sizeof(_worker_name), "can_%u", (unsigned)_self_index);
@@ -282,7 +291,7 @@ int16_t CANIface::receive(AP_HAL::CANFrame &out_frame, uint64_t &out_timestamp_u
 }
 
 void CANIface::_check_available(bool &read, bool &write,
-                                const AP_HAL::CANFrame *pending_tx) const
+                                const AP_HAL::CANFrame *pending_tx)
 {
     WITH_SEMAPHORE(sem);
 
@@ -311,7 +320,8 @@ bool CANIface::select(bool &read, bool &write,
 
     const uint64_t now = AP_HAL::micros64();
     if (sem_handle != nullptr && now < blocking_deadline) {
-        (void)sem_handle->wait(blocking_deadline - now);
+        const bool signaled = sem_handle->wait(blocking_deadline - now);
+        (void)signaled;
     }
 
     _drain_rx_queue();
@@ -404,7 +414,8 @@ void CANIface::_drain_tx_queue(void)
             const uint64_t now_us = AP_HAL::micros64();
             if (item_ptr->deadline < now_us) {
                 stats.tx_timedout++;
-                (void)_tx_queue.pop();
+                const bool popped = _tx_queue.pop();
+                (void)popped;
                 continue;
             }
 
@@ -422,14 +433,16 @@ void CANIface::_drain_tx_queue(void)
                               (item.abort_on_error ? AbortOnError : 0))) {
             WITH_SEMAPHORE(sem);
             stats.tx_rejected++;
-            (void)_tx_queue.pop();
+            const bool popped = _tx_queue.pop();
+            (void)popped;
             continue;
         }
 
         const esp_err_t ret = twai_transmit(&msg, 0);
         if (ret == ESP_OK) {
             WITH_SEMAPHORE(sem);
-            (void)_tx_queue.pop();
+            const bool popped = _tx_queue.pop();
+            (void)popped;
             continue;
         }
 
@@ -440,7 +453,8 @@ void CANIface::_drain_tx_queue(void)
 
         WITH_SEMAPHORE(sem);
         stats.tx_rejected++;
-        (void)_tx_queue.pop();
+        const bool popped = _tx_queue.pop();
+        (void)popped;
     }
 }
 

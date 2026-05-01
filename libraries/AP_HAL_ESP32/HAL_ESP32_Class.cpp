@@ -29,6 +29,9 @@
 #include "Storage.h"
 #include "AnalogIn.h"
 #include "Util.h"
+#if HAL_NUM_CAN_IFACES > 0
+#include "CANIface.h"
+#endif
 #if AP_SIM_ENABLED
 #include <AP_HAL/SIMState.h>
 #endif
@@ -86,11 +89,63 @@ static ESP32::Util utilInstance;
 static Empty::OpticalFlow opticalFlowDriver;
 static Empty::Flash flashDriver;
 
+#if HAL_NUM_CAN_IFACES > 0
+static ESP32::CANIface canDriver;
+static AP_HAL::CANIface* canIfaces[HAL_NUM_CAN_IFACES] = { &canDriver };
+#endif
+
 #if AP_SIM_ENABLED
 static AP_HAL::SIMState xsimstate;
 #endif
 
 extern const AP_HAL::HAL& hal;
+
+#if HAL_NUM_CAN_IFACES > 0 && HAL_ESP32_CAN_SELFTEST
+static void esp32_can_selftest(void)
+{
+    AP_HAL::CANIface *iface = hal.can[0];
+    if (iface == nullptr) {
+        hal.console->printf("ESP32 CAN selftest: no CAN iface\r\n");
+        return;
+    }
+
+    if (!iface->init(500000)) {
+        hal.console->printf("ESP32 CAN selftest: init failed\r\n");
+        return;
+    }
+
+    AP_HAL::CANFrame tx_frame {};
+    tx_frame.id = 0x123;
+    tx_frame.dlc = 1;
+    tx_frame.canfd = false;
+    tx_frame.data[0] = 0xA5;
+
+    const uint64_t deadline = AP_HAL::micros64() + 1000000ULL;
+    const int16_t send_ret = iface->send(tx_frame, deadline, AP_HAL::CANIface::Loopback);
+    if (send_ret < 0) {
+        hal.console->printf("ESP32 CAN selftest: send failed\r\n");
+        return;
+    }
+
+    for (uint8_t i = 0; i < 50; i++) {
+        AP_HAL::CANFrame rx_frame {};
+        uint64_t rx_timestamp_us = 0;
+        AP_HAL::CANIface::CanIOFlags rx_flags = 0;
+        if (iface->receive(rx_frame, rx_timestamp_us, rx_flags) > 0) {
+            hal.console->printf("ESP32 CAN selftest: PASS id=0x%03lx dlc=%u data0=0x%02x\r\n",
+                                (unsigned long)(rx_frame.id & AP_HAL::CANFrame::MaskStdID),
+                                (unsigned)rx_frame.dlc,
+                                (unsigned)rx_frame.data[0]);
+            return;
+        }
+        hal.scheduler->delay(10);
+    }
+
+    hal.console->printf("ESP32 CAN selftest: FAIL timeout busoff=%u err=%lu\r\n",
+                        (unsigned)iface->is_busoff(),
+                        (unsigned long)iface->getErrorCount());
+}
+#endif
 
 HAL_ESP32::HAL_ESP32() :
     AP_HAL::HAL(
@@ -123,7 +178,11 @@ HAL_ESP32::HAL_ESP32() :
 #if HAL_WITH_DSP
         &dspDriver,
 #endif
+#if HAL_NUM_CAN_IFACES > 0
+        canIfaces
+#else
         nullptr
+#endif
     )
 {}
 
@@ -135,9 +194,11 @@ void HAL_ESP32::run(int argc, char * const argv[], Callbacks* callbacks) const
 
     ((ESP32::Scheduler *)hal.scheduler)->set_callbacks(callbacks);
     hal.scheduler->init();
+#if HAL_NUM_CAN_IFACES > 0 && HAL_ESP32_CAN_SELFTEST
+    esp32_can_selftest();
+#endif
 }
 
 void AP_HAL::init()
 {
 }
-
