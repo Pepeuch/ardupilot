@@ -1518,6 +1518,27 @@ void AP_DroneCAN::handle_actuator_status_Volz(const CanardRxTransfer& transfer, 
 }
 #endif
 
+#if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+void AP_DroneCAN::handle_motor_position(const CanardRxTransfer &transfer, const uavcan_equipment_esc_MotorPosition &msg)
+{
+    WITH_SEMAPHORE(_motor_telemetry_sem);
+    _motor_telemetry.receive(transfer.source_node_id, msg, AP_HAL::micros64());
+}
+
+void AP_DroneCAN::handle_motor_speed(const CanardRxTransfer &transfer, const com_mowglinext_esc_MotorSpeed &msg)
+{
+    WITH_SEMAPHORE(_motor_telemetry_sem);
+    _motor_telemetry.receive(transfer.source_node_id, msg, AP_HAL::micros64());
+}
+
+bool AP_DroneCAN::get_motor_telemetry(uint8_t source_node_id, uint8_t esc_index,
+                                    AP_DroneCAN_MotorTelemetry::Stream &out)
+{
+    WITH_SEMAPHORE(_motor_telemetry_sem);
+    return _motor_telemetry.get(source_node_id, esc_index, AP_HAL::micros64(), out);
+}
+#endif // AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+
 /*
   handle ESC status message
  */

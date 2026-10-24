@@ -20,6 +20,11 @@
 
 #if HAL_ENABLE_DRONECAN_DRIVERS
 
+#include "AP_DroneCAN_config.h"
+#if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+#include "AP_DroneCAN_MotorTelemetry.h"
+#endif
+
 #include "AP_Canard_iface.h"
 #include <AP_CANManager/AP_CANManager.h>
 #include <AP_HAL/Semaphores.h>
@@ -93,6 +98,12 @@ public:
     // Return uavcan from @driver_index or nullptr if it's not ready or doesn't exist
     static AP_DroneCAN *get_dronecan(uint8_t driver_index);
     bool prearm_check(char* fail_msg, uint8_t fail_msg_len) const;
+
+#if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+    // Atomic raw snapshot. Check received, usable and fresh independently.
+    bool get_motor_telemetry(uint8_t source_node_id, uint8_t esc_index,
+                             AP_DroneCAN_MotorTelemetry::Stream &out);
+#endif
 
     __INITFUNC__ void init(uint8_t driver_index) override;
     bool add_interface(AP_HAL::CANIface* can_iface) override;
@@ -331,6 +342,17 @@ private:
     Canard::Publisher<ardupilot_gnss_Heading> gnss_heading{canard_iface};
     Canard::Publisher<ardupilot_gnss_Status> gnss_status{canard_iface};
 #endif
+#if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+    HAL_Semaphore _motor_telemetry_sem;
+    AP_DroneCAN_MotorTelemetry _motor_telemetry;
+    void handle_motor_position(const CanardRxTransfer &transfer, const uavcan_equipment_esc_MotorPosition &msg);
+    void handle_motor_speed(const CanardRxTransfer &transfer, const com_mowglinext_esc_MotorSpeed &msg);
+    Canard::ObjCallback<AP_DroneCAN, uavcan_equipment_esc_MotorPosition> motor_position_cb{this, &AP_DroneCAN::handle_motor_position};
+    Canard::Subscriber<uavcan_equipment_esc_MotorPosition> motor_position_listener{motor_position_cb, _driver_index};
+    Canard::ObjCallback<AP_DroneCAN, com_mowglinext_esc_MotorSpeed> motor_speed_cb{this, &AP_DroneCAN::handle_motor_speed};
+    Canard::Subscriber<com_mowglinext_esc_MotorSpeed> motor_speed_listener{motor_speed_cb, _driver_index};
+#endif
+
     // incoming messages
     Canard::ObjCallback<AP_DroneCAN, ardupilot_indication_Button> safety_button_cb{this, &AP_DroneCAN::handle_button};
     Canard::Subscriber<ardupilot_indication_Button> safety_button_listener{safety_button_cb, _driver_index};
