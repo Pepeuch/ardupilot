@@ -522,6 +522,15 @@ void AP_DroneCAN::loop(void)
 
         canard_iface.process(1);
 
+#if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
+        const uint32_t motor_now_ms = AP_HAL::millis();
+        if (motor_now_ms - _motor_telemetry_last_update_ms >= 10) {
+            _motor_telemetry_last_update_ms = motor_now_ms;
+            WITH_SEMAPHORE(_motor_telemetry_sem);
+            _motor_telemetry.update(AP_HAL::micros64());
+        }
+#endif
+
         safety_state_send();
         notify_state_send();
         check_parameter_callback_timeout();
@@ -1529,6 +1538,18 @@ void AP_DroneCAN::handle_motor_speed(const CanardRxTransfer &transfer, const com
 {
     WITH_SEMAPHORE(_motor_telemetry_sem);
     _motor_telemetry.receive(transfer.source_node_id, msg, AP_HAL::micros64());
+}
+
+void AP_DroneCAN::handle_motor_node_status(const CanardRxTransfer &transfer, const uavcan_protocol_NodeStatus &msg)
+{
+    WITH_SEMAPHORE(_motor_telemetry_sem);
+    _motor_telemetry.receive(transfer.source_node_id, msg, AP_HAL::micros64());
+}
+
+void AP_DroneCAN::get_motor_telemetry_snapshot(AP_DroneCAN_MotorTelemetry::Snapshot &out)
+{
+    WITH_SEMAPHORE(_motor_telemetry_sem);
+    _motor_telemetry.get_snapshot(AP_HAL::micros64(), out);
 }
 
 bool AP_DroneCAN::get_motor_telemetry(uint8_t source_node_id, uint8_t esc_index,

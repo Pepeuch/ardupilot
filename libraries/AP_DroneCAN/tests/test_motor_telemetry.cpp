@@ -1,12 +1,32 @@
 #include <AP_gtest.h>
 #include <AP_DroneCAN/AP_DroneCAN.h>
 #include <limits>
+#include <atomic>
+#include <thread>
 
 const AP_HAL::HAL &hal = AP_HAL::get_HAL();
 
 #if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
 using Store = AP_DroneCAN_MotorTelemetry;
 using C = Store::Continuity;
+
+// Seed counters near wrap without adding a runtime mutation API.
+class AP_DroneCAN_MotorTelemetry_Test
+{
+public:
+    static Store::Counters &position_counters(Store &store)
+    {
+        return store._entries[0].stream.position.counters;
+    }
+    static Store::Counters &speed_counters(Store &store)
+    {
+        return store._entries[0].stream.speed.counters;
+    }
+    static Store::Statistics &statistics(Store &store)
+    {
+        return store._statistics;
+    }
+};
 
 class MotorTelemetry : public ::testing::Test
 {
@@ -423,6 +443,353 @@ TEST_F(MotorTelemetry, IdentitiesAndSaturation)
     EXPECT_FALSE(store.receive(1, p, 1));
 }
 
+TEST_F(MotorTelemetry, InvalidBreakRemainsObservableAfterContiguousSamples)
+{
+    position(100);
+    p.valid = false;
+    p.sample_seq++;
+    position(200);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    p.valid = true;
+    p.sample_seq++;
+    position(300);
+    EXPECT_EQ(C::FIRST, out.position.continuity);
+    p.sample_seq++;
+    position(400);
+    EXPECT_EQ(C::CONTIGUOUS, out.position.continuity);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    EXPECT_EQ(C::INVALID, out.position.last_break);
+    EXPECT_EQ(4U, out.position.counters.accepted);
+    EXPECT_EQ(1U, out.position.counters.invalid);
+    EXPECT_EQ(0U, out.position.counters.sequence_rejected);
+    EXPECT_EQ(0U, out.speed.counters.accepted);
+    EXPECT_EQ(0U, out.speed.continuity_generation());
+}
+
+TEST_F(MotorTelemetry, SpeedInvalidityAndGapCountOneTransferBreak)
+{
+    speed(100);
+    s.valid = false;
+    s.sample_seq = 2; // Invalid and skipped sequence in the same transfer.
+    speed(200);
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    s.valid = true;
+    s.sample_seq++;
+    speed(300);
+    EXPECT_EQ(C::FIRST, out.speed.continuity);
+    s.sample_seq++;
+    speed(400);
+    EXPECT_EQ(C::CONTIGUOUS, out.speed.continuity);
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    EXPECT_EQ(1U, out.speed.counters.invalid);
+    EXPECT_EQ(4U, out.speed.counters.accepted);
+    EXPECT_EQ(C::INVALID, out.speed.last_break);
+    EXPECT_EQ(0U, out.position.counters.accepted);
+    EXPECT_EQ(0U, out.position.continuity_generation());
+}
+
+TEST_F(MotorTelemetry, RejectedInvalidPayloadHasIndependentCounters)
+{
+    p.sample_seq = s.sample_seq = 10;
+    position(100);
+    speed(100);
+    p.sample_seq = 9;
+    p.valid = false;
+    EXPECT_FALSE(store.receive(42, p, 200));
+    s.rpm = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(store.receive(42, s, 200));
+    ASSERT_TRUE(store.get(42, 31, 200, out));
+    EXPECT_EQ(1U, out.position.counters.accepted);
+    EXPECT_EQ(1U, out.position.counters.invalid);
+    EXPECT_EQ(1U, out.position.counters.sequence_rejected);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    EXPECT_EQ(1U, out.speed.counters.accepted);
+    EXPECT_EQ(1U, out.speed.counters.invalid);
+    EXPECT_EQ(1U, out.speed.counters.sequence_rejected);
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    EXPECT_EQ(100U, out.position.timestamp_us);
+    EXPECT_EQ(100U, out.speed.timestamp_us);
+    EXPECT_TRUE(out.position.valid);
+    EXPECT_TRUE(out.speed.valid);
+    s.sample_seq++;
+    s.rpm = -0.125f;
+    speed(300);
+    EXPECT_EQ(C::FIRST, out.speed.continuity);
+    s.sample_seq++;
+    speed(400);
+    EXPECT_EQ(C::CONTIGUOUS, out.speed.continuity);
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    EXPECT_EQ(1U, out.position.counters.accepted);
+    p.sample_seq = 11;
+    p.valid = true;
+    position(500);
+    EXPECT_EQ(C::FIRST, out.position.continuity);
+    EXPECT_EQ(2U, out.position.counters.accepted);
+    EXPECT_EQ(3U, out.speed.counters.accepted);
+}
+
+TEST_F(MotorTelemetry, RepeatedRejectionsAreEventsWithoutRefreshingSamples)
+{
+    p.sample_seq = s.sample_seq = 10;
+    position(100);
+    speed(100);
+    for (uint8_t seq : {
+             9, 10, 138
+         }) {
+        p.sample_seq = seq;
+        EXPECT_FALSE(store.receive(42, p, 200));
+    }
+    ASSERT_TRUE(store.get(42, 31, 200, out));
+    EXPECT_EQ(1U, out.position.counters.accepted);
+    EXPECT_EQ(3U, out.position.counters.sequence_rejected);
+    EXPECT_EQ(3U, out.position.continuity_generation());
+    EXPECT_EQ(0U, out.speed.continuity_generation());
+    EXPECT_EQ(100U, out.position.timestamp_us);
+    p.sample_seq = 11;
+    position(300);
+    EXPECT_EQ(C::FIRST, out.position.continuity);
+    p.sample_seq++;
+    position(400);
+    EXPECT_EQ(C::CONTIGUOUS, out.position.continuity);
+    EXPECT_EQ(3U, out.position.continuity_generation());
+}
+
+TEST_F(MotorTelemetry, TimeoutEventsComeFromMaintenanceNotReaders)
+{
+    position(0);
+    speed(100);
+    Store::Snapshot snapshot {};
+    for (uint8_t i = 0; i < 5; i++) {
+        store.get_snapshot(Store::TIMEOUT_US, snapshot);
+        EXPECT_FALSE(snapshot.streams[0].position.fresh);
+        EXPECT_TRUE(snapshot.streams[0].speed.fresh);
+        EXPECT_EQ(0U, snapshot.streams[0].position.continuity_generation());
+        EXPECT_EQ(100U, snapshot.updated_us);
+    }
+    store.update(Store::TIMEOUT_US);
+    for (uint8_t i = 0; i < 5; i++) {
+        store.update(Store::TIMEOUT_US + 1);
+        store.get_snapshot(Store::TIMEOUT_US + 1, snapshot);
+        ASSERT_TRUE(store.get(42, 31, Store::TIMEOUT_US + 1, out));
+        EXPECT_EQ(1U, out.position.continuity_generation());
+        EXPECT_EQ(C::TIMEOUT, out.position.last_break);
+        EXPECT_EQ(0U, out.speed.continuity_generation());
+        EXPECT_EQ(1U, snapshot.streams[0].position.continuity_generation());
+    }
+    store.update(Store::TIMEOUT_US + 100);
+    ASSERT_TRUE(store.get(42, 31, Store::TIMEOUT_US + 100, out));
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    p.sample_seq++;
+    position(Store::TIMEOUT_US + 101);
+    EXPECT_EQ(C::TIMEOUT, out.position.continuity);
+    p.sample_seq++;
+    position(Store::TIMEOUT_US + 102);
+    EXPECT_EQ(C::CONTIGUOUS, out.position.continuity);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+}
+
+TEST_F(MotorTelemetry, MetadataBreaksHavePersistentGenerations)
+{
+    position(100);
+    p.origin_id++;
+    p.sample_seq++;
+    position(200);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    EXPECT_EQ(C::ORIGIN, out.position.last_break);
+    p.position.union_tag = UAVCAN_EQUIPMENT_ESC_MOTORPOSITIONVALUE_REVOLUTIONS;
+    p.position.revolutions = -0.25f;
+    p.sample_seq++;
+    position(300);
+    EXPECT_EQ(2U, out.position.continuity_generation());
+    EXPECT_EQ(C::REPRESENTATION, out.position.last_break);
+    p.position.union_tag = UAVCAN_EQUIPMENT_ESC_MOTORPOSITIONVALUE_TICKS;
+    p.position.ticks.ticks = INT32_MIN;
+    p.position.ticks.ticks_per_revolution = 100;
+    p.sample_seq++;
+    position(400);
+    EXPECT_EQ(3U, out.position.continuity_generation());
+    p.position.ticks.ticks_per_revolution++;
+    p.sample_seq++;
+    position(500);
+    EXPECT_EQ(4U, out.position.continuity_generation());
+    EXPECT_EQ(C::RESOLUTION, out.position.last_break);
+    p.sample_seq++;
+    position(600);
+    EXPECT_EQ(C::CONTIGUOUS, out.position.continuity);
+    EXPECT_EQ(4U, out.position.continuity_generation());
+    EXPECT_EQ(INT32_MIN, out.position.value.ticks.ticks);
+}
+
+TEST_F(MotorTelemetry, SaturationAndIdentityReassignmentAreVisible)
+{
+    Store::Snapshot snapshot {};
+    store.get_snapshot(0, snapshot);
+    EXPECT_EQ(0U, snapshot.occupied_mask);
+    for (uint8_t node = 1; node <= Store::CAPACITY; node++) {
+        ASSERT_TRUE(store.receive(node, p, 100));
+    }
+    EXPECT_FALSE(store.receive(99, p, 200));
+    EXPECT_FALSE(store.receive(99, s, 200));
+    EXPECT_FALSE(store.receive(0, p, 200));
+    store.get_snapshot(200, snapshot);
+    EXPECT_EQ(255U, snapshot.occupied_mask);
+    EXPECT_EQ(1U, snapshot.statistics.position_saturation);
+    EXPECT_EQ(1U, snapshot.statistics.speed_saturation);
+    EXPECT_EQ(1U, snapshot.statistics.invalid_identity);
+    EXPECT_EQ(8U, snapshot.statistics.allocations);
+    const uint32_t original_generation = snapshot.streams[0].identity_generation;
+    ASSERT_TRUE(store.receive(99, s, Store::TIMEOUT_US + 100));
+    store.get_snapshot(Store::TIMEOUT_US + 100, snapshot);
+    EXPECT_EQ(9U, snapshot.statistics.allocations);
+    EXPECT_NE(original_generation, snapshot.streams[0].identity_generation);
+    EXPECT_EQ(99U, snapshot.streams[0].source_node_id);
+    EXPECT_EQ(0U, snapshot.streams[0].position.counters.accepted);
+    EXPECT_EQ(0U, snapshot.streams[0].position.continuity_generation());
+    EXPECT_FALSE(snapshot.streams[0].position.received);
+    EXPECT_EQ(1U, snapshot.streams[0].speed.counters.accepted);
+    EXPECT_EQ(C::FIRST, snapshot.streams[0].speed.continuity);
+    EXPECT_EQ(1U, snapshot.streams[1].position.continuity_generation());
+    // Returning identity can move to another slot: generation is driver-wide.
+    ASSERT_TRUE(store.receive(1, s, Store::TIMEOUT_US + 101));
+    ASSERT_TRUE(store.get(1, 31, Store::TIMEOUT_US + 101, out));
+    EXPECT_NE(original_generation, out.identity_generation);
+    EXPECT_EQ(10U, out.identity_generation);
+    EXPECT_EQ(0U, out.position.counters.accepted);
+    EXPECT_EQ(1U, out.speed.counters.accepted);
+    store.get_snapshot(Store::TIMEOUT_US + 101, snapshot);
+    EXPECT_EQ(1U, snapshot.statistics.position_saturation);
+    EXPECT_EQ(1U, snapshot.statistics.speed_saturation);
+}
+
+TEST_F(MotorTelemetry, NodeRestartInvalidatesOnlyMatchingNodeStreams)
+{
+    p.sample_seq = s.sample_seq = 10;
+    position(100);
+    speed(100);
+    p.esc_index = s.esc_index = 0;
+    ASSERT_TRUE(store.receive(42, p, 100));
+    ASSERT_TRUE(store.receive(42, s, 100));
+    ASSERT_TRUE(store.receive(43, p, 100));
+    uavcan_protocol_NodeStatus status {};
+    status.uptime_sec = 100;
+    store.receive(42, status, 150);
+    status.uptime_sec = 101;
+    store.receive(42, status, 160);
+    status.uptime_sec = 1;
+    store.receive(42, status, 200);
+    for (uint8_t esc : {
+             0, 31
+         }) {
+        ASSERT_TRUE(store.get(42, esc, 200, out));
+        EXPECT_EQ(1U, out.position.continuity_generation());
+        EXPECT_EQ(1U, out.speed.continuity_generation());
+        EXPECT_EQ(C::NODE_RESTART, out.position.last_break);
+        EXPECT_EQ(C::NODE_RESTART, out.speed.continuity);
+        EXPECT_FALSE(out.position.baseline_ready);
+        EXPECT_FALSE(out.speed.baseline_ready);
+        EXPECT_EQ(100U, out.position.timestamp_us);
+        EXPECT_EQ(100U, out.speed.timestamp_us);
+        EXPECT_EQ(10U, out.position.sample_seq);
+        EXPECT_EQ(1U, out.position.counters.accepted);
+    }
+    ASSERT_TRUE(store.get(43, 0, 200, out));
+    EXPECT_EQ(0U, out.position.continuity_generation());
+    p.sample_seq = s.sample_seq = 0;
+    ASSERT_TRUE(store.receive(42, p, 300));
+    ASSERT_TRUE(store.receive(42, s, 300));
+    ASSERT_TRUE(store.get(42, 0, 300, out));
+    EXPECT_EQ(C::FIRST, out.position.continuity);
+    EXPECT_EQ(C::FIRST, out.speed.continuity);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    p.sample_seq = s.sample_seq = 1;
+    ASSERT_TRUE(store.receive(42, p, 400));
+    ASSERT_TRUE(store.receive(42, s, 400));
+    store.receive(42, status, 500); // Equal uptime is not another restart.
+    ASSERT_TRUE(store.get(42, 0, 500, out));
+    EXPECT_EQ(C::CONTIGUOUS, out.position.continuity);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    EXPECT_EQ(C::NODE_RESTART, out.position.last_break);
+}
+
+TEST_F(MotorTelemetry, UnknownNodeStatusDoesNotAllocateAndResetSurvivesExpiry)
+{
+    uavcan_protocol_NodeStatus status {};
+    Store::Snapshot snapshot {};
+    store.receive(0, status, 0);
+    store.receive(42, status, 0);
+    store.get_snapshot(0, snapshot);
+    EXPECT_EQ(0U, snapshot.occupied_mask);
+    EXPECT_EQ(0U, snapshot.statistics.allocations);
+    p.sample_seq = s.sample_seq = 10;
+    position(100);
+    speed(100);
+    status.uptime_sec = 100;
+    store.receive(42, status, 200);
+    status.uptime_sec = 0;
+    store.receive(42, status, 300);
+    store.update(Store::TIMEOUT_US + 100);
+    p.sample_seq = s.sample_seq = 0;
+    position(Store::TIMEOUT_US + 101);
+    speed(Store::TIMEOUT_US + 101);
+    EXPECT_EQ(C::FIRST, out.position.continuity);
+    EXPECT_EQ(C::FIRST, out.speed.continuity);
+    EXPECT_EQ(2U, out.position.continuity_generation());
+    EXPECT_EQ(2U, out.speed.continuity_generation());
+}
+
+TEST_F(MotorTelemetry, CounterWrapIsDefinedAndIdentityResetIsExplicit)
+{
+    position(100);
+    speed(100);
+    auto &counters = AP_DroneCAN_MotorTelemetry_Test::position_counters(store);
+    auto &speed_counters = AP_DroneCAN_MotorTelemetry_Test::speed_counters(store);
+    counters = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    speed_counters = counters;
+    p.valid = s.valid = false;
+    EXPECT_FALSE(store.receive(42, p, 200));
+    EXPECT_FALSE(store.receive(42, s, 200));
+    ASSERT_TRUE(store.get(42, 31, 200, out));
+    EXPECT_EQ(UINT32_MAX, out.position.counters.accepted);
+    EXPECT_EQ(0U, out.position.counters.invalid);
+    EXPECT_EQ(0U, out.position.counters.sequence_rejected);
+    EXPECT_EQ(0U, out.position.continuity_generation());
+    EXPECT_EQ(UINT32_MAX, out.speed.counters.accepted);
+    EXPECT_EQ(0U, out.speed.counters.invalid);
+    EXPECT_EQ(0U, out.speed.counters.sequence_rejected);
+    EXPECT_EQ(0U, out.speed.continuity_generation());
+    p.sample_seq++;
+    s.sample_seq++;
+    position(300);
+    speed(300);
+    EXPECT_EQ(0U, out.speed.counters.accepted);
+    EXPECT_EQ(1U, out.speed.counters.invalid);
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    EXPECT_EQ(0U, out.position.counters.accepted);
+    EXPECT_EQ(1U, out.position.counters.invalid);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    auto &statistics = AP_DroneCAN_MotorTelemetry_Test::statistics(store);
+    statistics = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    EXPECT_FALSE(store.receive(0, p, 400));
+    for (uint8_t node = 1; node < Store::CAPACITY; node++) {
+        ASSERT_TRUE(store.receive(node, p, 400));
+    }
+    EXPECT_FALSE(store.receive(99, p, 400));
+    EXPECT_FALSE(store.receive(99, s, 400));
+    Store::Snapshot snapshot {};
+    store.get_snapshot(400, snapshot);
+    EXPECT_EQ(0U, snapshot.statistics.invalid_identity);
+    EXPECT_EQ(0U, snapshot.statistics.position_saturation);
+    EXPECT_EQ(0U, snapshot.statistics.speed_saturation);
+    EXPECT_EQ(0U, snapshot.streams[1].identity_generation); // Allocation wrap.
+    s.valid = true;
+    ASSERT_TRUE(store.receive(99, s, Store::TIMEOUT_US + 400));
+    ASSERT_TRUE(store.get(99, 31, Store::TIMEOUT_US + 400, out));
+    EXPECT_EQ(0U, out.position.counters.accepted);
+    EXPECT_EQ(1U, out.speed.counters.accepted);
+    EXPECT_EQ(0U, out.speed.counters.invalid);
+    EXPECT_EQ(0U, out.speed.continuity_generation());
+}
+
 // Deliver encoded payloads through the actual AP_DroneCAN subscribers, decode
 // wrappers and ObjCallbacks. Transport CRC/reassembly and hardware are outside
 // this test; the complete transfer payload is supplied to HandlerList.
@@ -489,6 +856,73 @@ TEST_F(MotorTelemetry, NativeSubscriptionsSeparateDriversAndSources)
     ASSERT_TRUE(driver0.get_motor_telemetry(42, 31, out));
     EXPECT_EQ(-7654321, out.position.value.ticks.ticks);
 }
+static AP_DroneCAN &snapshot_test_driver()
+{
+    static AP_DroneCAN driver(2);
+    return driver;
+}
+
+TEST_F(MotorTelemetry, NativeNodeStatusAndSnapshotWithoutLogger)
+{
+    auto &driver = snapshot_test_driver();
+    p.sample_seq = s.sample_seq = 10;
+    deliver(2, 127, p);
+    deliver(2, 127, s);
+    uavcan_protocol_NodeStatus status {};
+    status.uptime_sec = 100;
+    deliver(2, 127, status);
+    status.uptime_sec = 0;
+    deliver(2, 127, status);
+    ASSERT_TRUE(driver.get_motor_telemetry(127, 31, out));
+    EXPECT_EQ(C::NODE_RESTART, out.position.continuity);
+    EXPECT_EQ(1U, out.position.continuity_generation());
+    EXPECT_EQ(1U, out.speed.continuity_generation());
+    Store::Snapshot snapshot {};
+    driver.get_motor_telemetry_snapshot(snapshot);
+    EXPECT_NE(0U, snapshot.occupied_mask);
+    bool found = false;
+    for (uint8_t i = 0; i < Store::CAPACITY; i++) {
+        if ((snapshot.occupied_mask & (1U << i)) != 0 && snapshot.streams[i].source_node_id == 127) {
+            EXPECT_EQ(out.identity_generation, snapshot.streams[i].identity_generation);
+            EXPECT_EQ(out.position.timestamp_us, snapshot.streams[i].position.timestamp_us);
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(MotorTelemetry, NativeSnapshotsAreAtomicDuringReception)
+{
+    auto &driver = snapshot_test_driver();
+    std::atomic<bool> done {false};
+    std::thread receiver([&]() {
+        auto msg = p;
+        msg.esc_index = 0;
+        for (int32_t i = 1; i <= 1000; i++) {
+            msg.sample_seq = uint8_t(i);
+            msg.position.ticks.ticks = i;
+            deliver(2, 126, msg);
+        }
+        done.store(true);
+    });
+    Store::Snapshot snapshot {};
+    do {
+        driver.get_motor_telemetry_snapshot(snapshot);
+        for (uint8_t i = 0; i < Store::CAPACITY; i++) {
+            if ((snapshot.occupied_mask & (1U << i)) == 0 || snapshot.streams[i].source_node_id != 126) {
+                continue;
+            }
+            const auto &sample = snapshot.streams[i].position;
+            EXPECT_EQ(sample.counters.accepted, uint32_t(sample.value.ticks.ticks));
+            EXPECT_EQ(uint8_t(sample.counters.accepted), sample.sample_seq);
+        }
+    } while (!done.load());
+    receiver.join();
+    ASSERT_TRUE(driver.get_motor_telemetry(126, 0, out));
+    EXPECT_EQ(1000U, out.position.counters.accepted);
+    EXPECT_EQ(1000, out.position.value.ticks.ticks);
+}
+
 #endif // AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
 
 AP_GTEST_MAIN()

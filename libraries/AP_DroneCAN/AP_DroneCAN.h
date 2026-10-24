@@ -103,6 +103,8 @@ public:
     // Atomic raw snapshot. Check received, usable and fresh independently.
     bool get_motor_telemetry(uint8_t source_node_id, uint8_t esc_index,
                              AP_DroneCAN_MotorTelemetry::Stream &out);
+    // Atomic enumeration of the bounded store, including driver statistics.
+    void get_motor_telemetry_snapshot(AP_DroneCAN_MotorTelemetry::Snapshot &out);
 #endif
 
     __INITFUNC__ void init(uint8_t driver_index) override;
@@ -345,12 +347,16 @@ private:
 #if AP_DRONECAN_MOTOR_TELEMETRY_ENABLED
     HAL_Semaphore _motor_telemetry_sem;
     AP_DroneCAN_MotorTelemetry _motor_telemetry;
+    uint32_t _motor_telemetry_last_update_ms = 0;
+    void handle_motor_node_status(const CanardRxTransfer &transfer, const uavcan_protocol_NodeStatus &msg);
     void handle_motor_position(const CanardRxTransfer &transfer, const uavcan_equipment_esc_MotorPosition &msg);
     void handle_motor_speed(const CanardRxTransfer &transfer, const com_mowglinext_esc_MotorSpeed &msg);
     Canard::ObjCallback<AP_DroneCAN, uavcan_equipment_esc_MotorPosition> motor_position_cb{this, &AP_DroneCAN::handle_motor_position};
     Canard::Subscriber<uavcan_equipment_esc_MotorPosition> motor_position_listener{motor_position_cb, _driver_index};
     Canard::ObjCallback<AP_DroneCAN, com_mowglinext_esc_MotorSpeed> motor_speed_cb{this, &AP_DroneCAN::handle_motor_speed};
     Canard::Subscriber<com_mowglinext_esc_MotorSpeed> motor_speed_listener{motor_speed_cb, _driver_index};
+    Canard::ObjCallback<AP_DroneCAN, uavcan_protocol_NodeStatus> motor_node_status_cb{this, &AP_DroneCAN::handle_motor_node_status};
+    Canard::Subscriber<uavcan_protocol_NodeStatus> motor_node_status_listener{motor_node_status_cb, _driver_index};
 #endif
 
     // incoming messages
