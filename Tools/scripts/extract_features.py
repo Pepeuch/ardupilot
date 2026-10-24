@@ -304,6 +304,7 @@ class ExtractFeatures(BuildScriptBase):
             ('AP_CUSTOMROTATIONS_ENABLED', 'AP_CustomRotations::init'),
             ('AP_OSD_LINK_STATS_EXTENSIONS_ENABLED', r'AP_OSD_Screen::draw_rc_tx_power'),
             ('HAL_ENABLE_DRONECAN_DRIVERS', r'AP_DroneCAN::init'),
+            ('AP_DRONECAN_MOTOR_TELEMETRY_ENABLED', r'AP_DroneCAN::handle_motor_position\b'),
             ('AP_BARO_PROBE_EXTERNAL_I2C_BUSES', r'AP_Baro::_probe_i2c_barometers'),
             ('AP_RSSI_ENABLED', r'AP_RSSI::init'),
             ('AP_FOLLOW_ENABLED', 'AP_Follow::AP_Follow'),
